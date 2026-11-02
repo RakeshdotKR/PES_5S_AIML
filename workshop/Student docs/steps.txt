@@ -1,0 +1,11 @@
+My Github repository to follow:
+https://github.com/RakeshdotKR/PES_5S_AIML
+
+Create Virtual Environment
+1. python -m venv .venv
+2.  Activate the virtual envi:
+	.venv\Scripts\Activate.bat      	//Win
+	source .venv/bin/activate		    //mac
+
+3. Installations:
+	pip install python-dotenv

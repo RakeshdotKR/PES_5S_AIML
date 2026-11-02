@@ -1,11 +1,23 @@
 My Github repository to follow:
 https://github.com/RakeshdotKR/PES_5S_AIML
 
+*********************************
+Day 1:
+*********************************
 Create Virtual Environment (Execute the following in cmd prompt)
 1. python -m venv .venv
-2.  Activate the virtual envi:
+2.  Activate the virtual environment:
 	.venv\Scripts\Activate.bat      	//Win
 	source .venv/bin/activate		    //mac
 
 3. Installations:
 	pip install python-dotenv google-genai ollama
+
+
+*********************************
+Day 2:
+*********************************
+1. Activate the virtual environment
+2. pip install chromadb faiss-cpu "pinecone" google-genai ollama pypdf python-dotenv
+3. Add PINECONE_API_KEY=your_key_from_pinecone.io to .env file
+4. Do run "ollama pull nomic-embed-text" (in a cmd prompt not inside the virtual environment)

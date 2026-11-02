@@ -1,11 +1,11 @@
 My Github repository to follow:
 https://github.com/RakeshdotKR/PES_5S_AIML
 
-Create Virtual Environment
+Create Virtual Environment (Execute the following in cmd prompt)
 1. python -m venv .venv
 2.  Activate the virtual envi:
 	.venv\Scripts\Activate.bat      	//Win
 	source .venv/bin/activate		    //mac
 
 3. Installations:
-	pip install python-dotenv
+	pip install python-dotenv google-genai ollama

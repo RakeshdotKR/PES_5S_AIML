@@ -169,3 +169,91 @@ print(f"[Chroma] Ephemeral client ready  → in-memory only")
 
 # List names of collections already saved in the persistent database.
 print(f"[Chroma] Existing collections    : {[c.name for c in chroma_persistent.list_collections()]}")
+
+# Name of the Chroma collection to use.
+COLLECTION_NAME = "day2_demo"
+
+
+# get_or_create_collection is idempotent — safe to call on every run.
+# If the collection already exists, it returns it. If not, it creates it.
+# embedding_function=None means WE supply embeddings manually on every add/query call.
+# This is critical for model portability — the collection isn't locked to one embed model.
+
+# Get the existing collection or create it if missing.
+collection = chroma_persistent.get_or_create_collection(
+    name=COLLECTION_NAME,
+
+    # Use cosine distance instead of the default L2 distance.
+    metadata={"hnsw:space": "cosine"},  # use cosine distance (vs default L2) — better for text
+)
+
+
+# ── Sample documents with rich metadata ──────────────────────────────────────
+# Metadata is a flat dict (string/int/float/bool values only — no nested dicts).
+# Think of it as the "columns" of a schema — enables filtered retrieval.
+
+# Text chunks to embed and store.
+documents = [
+    "Chroma uses HNSW for approximate nearest neighbour search over dense embeddings.",
+    "FAISS is a C++ library by Meta AI for efficient similarity search at billion-vector scale.",
+    "Pinecone provides a fully managed vector database service with serverless scaling.",
+    "RAG (Retrieval-Augmented Generation) grounds LLM answers in retrieved documents, reducing hallucination.",
+    "Chunking splits documents into segments before embedding — chunk size is the #1 RAG quality lever.",
+    "Cosine similarity measures the angle between two vectors; magnitude is ignored.",
+    "nomic-embed-text is an open-source embedding model that runs locally via Ollama.",
+    "Exponential backoff with jitter prevents thundering-herd retries on 429 rate-limit responses.",
+]
+
+
+# Metadata attached to each document for filtering and provenance.
+metadatas = [
+    {"source": "chroma_docs",   "topic": "vector_db",   "section": "architecture", "day": 2},
+    {"source": "faiss_docs",    "topic": "vector_db",   "section": "library",      "day": 2},
+    {"source": "pinecone_docs", "topic": "vector_db",   "section": "managed",      "day": 2},
+    {"source": "rag_overview",  "topic": "rag",         "section": "concepts",     "day": 3},
+    {"source": "rag_overview",  "topic": "chunking",    "section": "strategy",     "day": 2},
+    {"source": "math_primer",   "topic": "embeddings",  "section": "similarity",   "day": 1},
+    {"source": "ollama_docs",   "topic": "embeddings",  "section": "local_model",  "day": 2},
+    {"source": "api_patterns",  "topic": "engineering", "section": "reliability",  "day": 1},
+]
+
+
+# Generate a unique string ID for every document.
+ids = [f"doc_{i}" for i in range(len(documents))]
+
+
+# ── Generate embeddings (Ollama path — no API rate limits for this demo) ──
+# Announce embedding generation.
+print("\n[Chroma] Generating embeddings via nomic-embed-text (Ollama)...")
+
+# Start timer.
+t0 = time.perf_counter()
+
+# Create one embedding vector per document using local Ollama.
+embeddings = embed_ollama(documents)
+
+# Print elapsed time and vector dimension.
+print(f"         Done in {time.perf_counter()-t0:.2f}s | dim={len(embeddings[0])}")
+
+
+# ── Add to collection ──────────────────────────────────────────────────────
+# add() is idempotent if IDs already exist — it will RAISE an error on duplicate IDs.
+# Use upsert() if you want add-or-update semantics (safer for re-runs).
+
+# Store documents, metadata, IDs, and precomputed embeddings in Chroma.
+collection.upsert(
+    ids=ids,
+    documents=documents,   # original text — stored alongside the embedding for retrieval
+    metadatas=metadatas,
+    embeddings=embeddings, # our manually computed vectors — Chroma stores them as-is
+)
+
+
+# Count how many documents are now in the collection.
+count = collection.count()
+
+# Print the collection size.
+print(f"[Chroma] Collection '{COLLECTION_NAME}': {count} documents")
+
+# Preview the first two stored documents.
+print(f"[Chroma] Peek (first 2): {collection.peek(limit=2)['documents']}")

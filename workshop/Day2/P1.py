@@ -257,3 +257,66 @@ print(f"[Chroma] Collection '{COLLECTION_NAME}': {count} documents")
 
 # Preview the first two stored documents.
 print(f"[Chroma] Peek (first 2): {collection.peek(limit=2)['documents']}")
+
+def query_chroma(query: str, n_results: int = 3, where: dict = None) -> None:
+    """
+    Query the Chroma collection and print results with distances.
+    
+    n_results: how many nearest neighbours to return (top-k).
+    where: optional metadata filter dict — only documents matching ALL conditions are candidates.
+    distances: cosine distance (0=identical, 2=opposite); lower is more relevant.
+    """
+
+    # Embed the query using the same Ollama model used for stored documents.
+    query_embedding = embed_query_ollama(query)  # embed the query with the same model as the docs
+
+
+    # Search Chroma for the closest stored documents.
+    results = collection.query(
+        query_embeddings=[query_embedding],   # list of query vectors (one here)
+        n_results=n_results,                  # return top-k matches
+        where=where,                          # None means no filter — search all documents
+        include=["documents", "metadatas", "distances"],
+    )
+
+
+    # Print the query and any active metadata filter.
+    print(f"\n── Query: '{query}' | filter={where} ──")
+
+    # Loop through each returned document, metadata record, and distance.
+    for i, (doc, meta, dist) in enumerate(zip(
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0],
+    )):
+        # Convert cosine distance to cosine similarity.
+        relevance = 1 - dist   # cosine similarity = 1 - cosine distance
+
+        # Print rank, relevance score, and metadata.
+        print(f"  [{i+1}] score={relevance:.3f} | source={meta['source']} | topic={meta['topic']}")
+
+        # Print the first 100 characters of the matched document.
+        print(f"       {doc[:100]}...")
+
+
+
+# ── Run several queries: with and without metadata filters ───────────────────
+
+
+# No filter — search all 8 documents
+query_chroma("How does approximate nearest neighbour search work?", n_results=3)
+
+
+# Metadata filter: only documents about vector databases
+query_chroma("What are the options for storing vectors?", n_results=3,
+             where={"topic": {"$eq": "vector_db"}})
+
+
+# Metadata filter: only Day 1 content
+query_chroma("How to handle API rate limits?", n_results=2,
+             where={"day": {"$eq": 1}})
+
+
+# Metadata filter using $in (match any of several values)
+query_chroma("How are embeddings used in RAG?", n_results=3,
+             where={"topic": {"$in": ["rag", "embeddings"]}})

@@ -348,7 +348,7 @@ class PineconeStore(VectorStore):
         ns_stats = stats.namespaces.get(self.namespace)
         return ns_stats.vector_count if ns_stats else 0
 
-    import chromadb
+import chromadb
 
 
 class ChromaStore(VectorStore):

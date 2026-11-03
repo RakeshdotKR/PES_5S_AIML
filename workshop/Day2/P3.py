@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Synthetic sample document (replace with real PDF text in class) ──────────
+# ── Synthetic sample document  ──────────
 # Students use their actual PDF — this synthetic text lets the experiment run without a PDF.
 SAMPLE_TEXT = """
 Chapter 1: Library Rules and Regulations

@@ -320,3 +320,121 @@ query_chroma("How to handle API rate limits?", n_results=2,
 # Metadata filter using $in (match any of several values)
 query_chroma("How are embeddings used in RAG?", n_results=3,
              where={"topic": {"$in": ["rag", "embeddings"]}})
+
+
+# Update a document — upsert() handles both add-new and update-existing.
+
+# New replacement text for document doc_0.
+updated_text = "Chroma uses HNSW for ANN search. It supports cosine, L2, and IP distance metrics."
+
+# Generate a fresh embedding for the updated text.
+updated_embedding = embed_ollama([updated_text])[0]
+
+
+# Replace the existing doc_0 record using its same ID.
+collection.upsert(
+    ids=["doc_0"],                          # same ID as the original doc_0
+    documents=[updated_text],
+    metadatas=[{"source": "chroma_docs", "topic": "vector_db", "section": "architecture", "day": 2}],
+    embeddings=[updated_embedding],
+)
+
+# Fetch and preview the updated document text.
+print(f"\n[Chroma] Updated doc_0. New text: {collection.get(ids=['doc_0'])['documents'][0][:80]}")
+
+
+# Delete a document by ID
+collection.delete(ids=["doc_7"])   # remove the backoff doc
+
+# Print the new total document count after deletion.
+print(f"[Chroma] Deleted doc_7. Collection now has {collection.count()} documents.")
+
+# Name of the persistent Chroma collection for the capstone corpus.
+CAPSTONE_COLLECTION = "capstone_corpus"
+
+
+# Get the capstone collection, or create it if it does not exist.
+capstone_col = chroma_persistent.get_or_create_collection(
+    name=CAPSTONE_COLLECTION,
+
+    # Use cosine distance for text similarity search.
+    metadata={"hnsw:space": "cosine"},
+)
+
+
+# Sample capstone snippets — replace these with actual corpus chunks in Session 3.
+# Each represents a chunk from a hypothetical "Campus Knowledge Base" (college handbook).
+
+# Text chunks representing campus handbook content.
+capstone_chunks = [
+    "The library is open Monday to Saturday from 8 AM to 8 PM. Students must carry their ID cards to borrow books.",
+    "A student may borrow up to 3 books at a time. Books are due in 14 days. Late returns incur a fine of ₹5 per day per book.",
+    "The computer lab in Block C has 60 workstations. It is open 24 hours during examination periods.",
+    "Fee payment for even semesters is due by the 15th of January. Late payment attracts a penalty of ₹500.",
+    "The Anti-Ragging Committee meets on the first Monday of every month. Report incidents to the Dean of Students.",
+    "Attendance below 75% in any subject results in automatic detention. Medical certificates must be submitted within 5 days.",
+    "The sports complex includes a basketball court, two badminton courts, and a 400m running track.",
+    "Industry internships of at least 4 weeks are mandatory for all 6th-semester students. Completion must be certified by the company.",
+    "The research lab on the 3rd floor of the CSE department is equipped with GPU workstations for deep learning projects.",
+    "Students must register for electives by the end of the 2nd week of each semester via the online portal.",
+]
+
+
+# Metadata describing each chunk's source, page, section, and topic.
+capstone_meta = [
+    {"source": "college_handbook.pdf", "page": 12, "section": "library", "topic": "rules"},
+    {"source": "college_handbook.pdf", "page": 13, "section": "library", "topic": "fines"},
+    {"source": "college_handbook.pdf", "page": 20, "section": "facilities", "topic": "labs"},
+    {"source": "college_handbook.pdf", "page": 5,  "section": "fees",      "topic": "payment"},
+    {"source": "college_handbook.pdf", "page": 8,  "section": "conduct",   "topic": "anti_ragging"},
+    {"source": "college_handbook.pdf", "page": 9,  "section": "academics", "topic": "attendance"},
+    {"source": "college_handbook.pdf", "page": 22, "section": "facilities","topic": "sports"},
+    {"source": "college_handbook.pdf", "page": 30, "section": "academics", "topic": "internship"},
+    {"source": "college_handbook.pdf", "page": 21, "section": "facilities","topic": "research"},
+    {"source": "college_handbook.pdf", "page": 11, "section": "academics", "topic": "registration"},
+]
+
+
+# Create unique IDs for all capstone chunks.
+capstone_ids = [f"cap_{i}" for i in range(len(capstone_chunks))]
+
+
+# Announce local embedding generation.
+print("\n[Capstone] Embedding corpus chunks via nomic-embed-text...")
+
+# Generate one embedding vector per corpus chunk.
+cap_embeddings = embed_ollama(capstone_chunks)
+
+
+# Store chunks, metadata, IDs, and vectors in the capstone collection.
+capstone_col.upsert(
+    ids=capstone_ids,
+    documents=capstone_chunks,
+    metadatas=capstone_meta,
+    embeddings=cap_embeddings,
+)
+
+
+# Confirm how many chunks were ingested.
+print(f"[Capstone] Ingested {capstone_col.count()} chunks into '{CAPSTONE_COLLECTION}'.")
+
+
+# Smoke query — verify retrieval works on the capstone corpus
+
+# Embed the test question.
+cap_q = embed_query_ollama("What is the fine for late book return?")
+
+# Retrieve the three most similar handbook chunks.
+cap_results = capstone_col.query(
+    query_embeddings=[cap_q],
+    n_results=3,
+    include=["documents", "metadatas", "distances"],
+)
+
+# Print the smoke-query header.
+print("\n[Capstone Smoke Query] 'What is the fine for late book return?'")
+
+# Display each retrieved chunk with relevance and source details.
+for doc, meta, dist in zip(cap_results["documents"][0], cap_results["metadatas"][0], cap_results["distances"][0]):
+    print(f"  score={1-dist:.3f} | {meta['source']} p.{meta['page']} [{meta['section']}]")
+    print(f"  {doc[:110]}")

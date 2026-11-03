@@ -140,3 +140,32 @@ print(f"        Ollama model : {OLLAMA_EMBED_MODEL}")
 
 # Print the expected embedding dimension.
 print(f"        Expected dim : {EMBED_DIM}")
+
+# Chroma DB
+# Import the Chroma vector database client.
+import chromadb
+
+
+# PersistentClient stores data on disk at the given path.
+# On subsequent runs, it LOADS existing collections — no need to re-add documents.
+# Use this for the capstone corpus (you want it to survive restarts).
+
+# Create a disk-backed Chroma client using ./chroma_db.
+chroma_persistent = chromadb.PersistentClient(path="./chroma_db")
+
+
+# EphemeralClient stores data only in RAM — wiped when the process exits.
+# Useful for one-off experiments or unit tests where you don't want leftovers.
+
+# Create an in-memory Chroma client.
+chroma_ephemeral = chromadb.EphemeralClient()
+
+
+# Confirm the persistent client's storage location.
+print(f"\n[Chroma] Persistent client ready → ./chroma_db")
+
+# Confirm the ephemeral client is memory-only.
+print(f"[Chroma] Ephemeral client ready  → in-memory only")
+
+# List names of collections already saved in the persistent database.
+print(f"[Chroma] Existing collections    : {[c.name for c in chroma_persistent.list_collections()]}")

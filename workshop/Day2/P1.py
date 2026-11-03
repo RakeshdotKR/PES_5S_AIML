@@ -436,5 +436,10 @@ print("\n[Capstone Smoke Query] 'What is the fine for late book return?'")
 
 # Display each retrieved chunk with relevance and source details.
 for doc, meta, dist in zip(cap_results["documents"][0], cap_results["metadatas"][0], cap_results["distances"][0]):
-    print(f"  score={1-dist:.3f} | {meta['source']} p.{meta['page']} [{meta['section']}]")
+    print(
+    f"  score={1-dist:.3f} | "
+    f"{meta.get('source', 'Unknown')} "
+    f"p.{meta.get('page', 'N/A')} "
+    f"[{meta.get('section', 'Unspecified')}]"
+    )
     print(f"  {doc[:110]}")

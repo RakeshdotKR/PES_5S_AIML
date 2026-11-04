@@ -263,3 +263,118 @@ def answer(
 # python -c "from P3 import answer; print(answer('What are the library hours?')['text'][:200])"
 # python -c "from P3 import answer; r=answer('How much is the fine for late book return?'); print(r['text']); print(r['citations']); print(r['latency'])"
 
+# ***************************************************************************************************************
+def _report(result_text: str, results: List[Dict], citations: List[Dict],
+            latency: Dict[str, float], abstained: bool) -> None:
+    """Print the post-answer report: citations, abstention flag, latency table."""
+    if citations:
+        print("[citations]")
+        for c in citations:
+            print(f"  [{c['marker']}] {c['source']} p.{c['page']} (score {c['score']})")
+    else:
+        print("[citations] (none — model cited nothing or abstained)")
+
+    print(f"[abstained] {'yes' if abstained else 'no'}")
+
+    # Latency breakdown — the measurement that drives every tuning decision.
+    parts = " · ".join(f"{stage}={value:.3f}s" for stage, value in latency.items())
+    print(f"[latency]   {parts}")
+
+
+def _run_once(question: str, args: argparse.Namespace) -> None:
+    """Prepare the pipeline once, then generate (streaming or not) + report."""
+    prep = _prepare(
+        question,
+        backend=args.backend,
+        topk=args.topk,
+        mmr=(args.mmr == "on"),
+        rewrite=(args.rewrite == "on"),
+        collection=args.collection,
+    )
+    results = prep["results"]
+
+    if args.stream == "on":
+        print("[answer] ", end="", flush=True)
+        parts: List[str] = []
+        t0 = time.perf_counter()
+        for token in _generate_stream(prep["prompt"], args.llm):
+            print(token, end="", flush=True)   # token-by-token UX (Day 1 lesson)
+            parts.append(token)
+        gen_s = time.perf_counter() - t0
+        text = "".join(parts)
+        print()                                # newline after the streamed answer
+    else:
+        text, gen_s = _generate(prep["prompt"], args.llm)
+        print(f"[answer] {text}")
+
+    latency = dict(prep["latency"])
+    latency["generate_s"] = round(gen_s, 3)
+    latency["total_s"] = round(sum(latency.values()), 3)
+
+    _report(text, results, _citations(text, results), latency, _abstained(text))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Day 3 RAG engine — citable, abstaining, backend-swappable."
+    )
+    parser.add_argument("--question",   default=None,
+                        help="Question to answer (omit for interactive mode)")
+    parser.add_argument("--backend",    default="chroma", choices=["chroma", "faiss", "pinecone"],
+                        help="VectorStore backend from Day 2 (default: chroma)")
+    parser.add_argument("--llm",        default="gemini", choices=["gemini", "ollama"],
+                        help="Generation brain (default: gemini-3.6-flash)")
+    parser.add_argument("--topk",       default=5, type=int,
+                        help="Context blocks to retrieve (default: 5)")
+    parser.add_argument("--mmr",        default="off", choices=["on", "off"],
+                        help="MMR diversity re-rank (default: off)")
+    parser.add_argument("--rewrite",    default="off", choices=["on", "off"],
+                        help="Query rewrite before retrieval (default: off)")
+    parser.add_argument("--stream",     default="on", choices=["on", "off"],
+                        help="Stream tokens to console (default: on)")
+    parser.add_argument("--collection", default=DEFAULT_COLLECTION,
+                        help="Collection / index name (default: capstone_corpus)")
+    args = parser.parse_args()
+
+    # Single-question mode.
+    if args.question:
+        _run_once(args.question, args)
+        return
+
+    # Interactive REPL — the class demo loop.
+    print("=" * 66)
+    print("  RAG ENGINE — interactive mode")
+    print(f"  backend={args.backend} · llm={args.llm} · topk={args.topk} "
+          f"· mmr={args.mmr} · rewrite={args.rewrite} · stream={args.stream}")
+    print("  Type a question. Type 'quit' to exit.")
+    print("=" * 66)
+    while True:
+        q = input("\nYou: ").strip()
+        if q.lower() in ("quit", "exit", "q"):
+            print("Goodbye.")
+            break
+        if not q:
+            continue
+        try:
+            _run_once(q, args)
+        except Exception as e:
+            # Never crash the REPL — print the error and keep the session alive.
+            print(f"[error] {type(e).__name__}: {e}")
+
+
+if __name__ == "__main__":
+    main()
+
+# Execution (run all four — this is the acceptance test):
+
+#  # 1) Baseline: plain top-k, Gemini, streamed, cited
+# python P3.py --question "What is the fine for late book return?"
+
+# # 2) Both Session 1 levers ON — compare latency and citations against run 1
+# python P3.py --question "What is the fine for late book return?" --mmr on --rewrite on
+
+# # 3) Local brain — record quality/latency delta vs run 1
+# python P3.py --question "When is the fee payment deadline for odd semesters?" --llm ollama
+
+# # 4) Off-corpus question — the abstention guardrail must fire
+# python P3.py --question "Who won the FIFA World Cup in 2022?" --llm ollama

@@ -107,3 +107,76 @@ def rewrite_query(question: str, model: str = GEMINI_CHAT_MODEL) -> str:
 print(rewrite_query("what about its fine?"))                 # → standalone version
 print(rewrite_query("How many books can a UG student borrow?"))  # → returned unchanged
 print(rewrite_query("and the lab rules too?"))               # → resolved into a full query
+
+# *************************************************************************************************
+def mmr_rerank(
+    query_emb: List[float],
+    candidate_embeddings: List[List[float]],
+    k: int,
+    lam: float = 0.7,
+) -> List[int]:
+    """
+    Maximal Marginal Relevance — returns the INDICES of the k selected candidates.
+
+        score(d) = lam * sim(query, d) - (1 - lam) * max_{s already selected} sim(d, s)
+
+    lam = 1.0 → pure relevance (identical to plain top-k)
+    lam = 0.0 → pure diversity (spreads selections across the candidate pool)
+    Default 0.7 → keep relevance dominant, suppress near-duplicates.
+
+    Input candidates are expected roughly relevance-sorted (Chroma returns them
+    that way), but the algorithm does not depend on the order.
+    """
+    # Degenerate cases: nothing to choose from, or fewer candidates than k.
+    if len(candidate_embeddings) <= k:
+        return list(range(len(candidate_embeddings)))
+
+    # (N, D) matrix of L2-normalised candidate vectors.
+    # After normalisation, a row-dot-row product IS cosine similarity.
+    mat = np.asarray(candidate_embeddings, dtype=np.float32)
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    mat = mat / np.where(norms == 0, 1, norms)      # guard against zero vectors
+
+    # Normalise the query the same way so mat @ q = cosine sims to the query.
+    q = np.asarray(query_emb, dtype=np.float32)
+    q = q / (np.linalg.norm(q) or 1.0)
+
+    sim_q = mat @ q                 # shape (N,) — similarity of every candidate to the query
+
+    selected: List[int] = []        # indices chosen so far
+    remaining = list(range(len(mat)))  # indices still in the pool
+
+    while remaining and len(selected) < k:
+        if not selected:
+            # First pick: nothing to be redundant with → plain best match.
+            best = remaining[int(np.argmax(sim_q[remaining]))]
+        else:
+            # Similarity of each remaining candidate to each already-selected one.
+            redundancy = mat[remaining] @ mat[selected].T   # shape (len(remaining), len(selected))
+            max_red = redundancy.max(axis=1)                # worst-case duplication per candidate
+            mmr_scores = lam * sim_q[remaining] - (1.0 - lam) * max_red
+            best = remaining[int(np.argmax(mmr_scores))]
+
+        selected.append(best)
+        remaining.remove(best)      # list.remove is O(N) — fine at k*3 ≤ ~30 candidates
+
+    return selected
+
+
+# **Execution steps:** *****IMPORTANT****
+# Run these three commands separately to demonstrate the effect of lambda:
+
+# Experiment 1 – Pure relevance
+# python -c "from P1 import mmr_rerank; print(mmr_rerank([1,0], [[1,0],[0.99,0.1],[0,1],[0.1,0.99]], k=2, lam=1.0))"
+
+# Expected: [0, 1]
+
+# Experiment 2 – Balanced relevance and diversity
+# python -c "from P1 import mmr_rerank; print(mmr_rerank([1,0], [[1,0],[0.99,0.1],[0,1],[0.1,0.99]], k=2, lam=0.7))"
+
+# Expected: [0, 1]
+
+# Experiment 3 – More diversity
+# python -c "from P1 import mmr_rerank; print(mmr_rerank([1,0], [[1,0],[0.99,0.1],[0,1],[0.1,0.99]], k=2, lam=0.3))"
+
+# Expected: [0, 2]

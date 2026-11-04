@@ -82,31 +82,31 @@ print("[retriever] Ready — embedding model:", OLLAMA_EMBED_MODEL, "| chat mode
 # store has no memory of what "its" refers to. ONE extra Gemini call before
 # retrieval converts them into standalone search queries.
 
-REWRITE_PROMPT = """You are a search-query rewriter for a document retrieval system.
-Rewrite the user question as a single standalone search query that could be
-matched against a campus handbook. Resolve pronouns and conversation references.
-Do NOT answer the question. Do NOT add facts that are not implied by the question.
-If the question is already standalone, return it unchanged.
+# REWRITE_PROMPT = """You are a search-query rewriter for a document retrieval system.
+# Rewrite the user question as a single standalone search query that could be
+# matched against a campus handbook. Resolve pronouns and conversation references.
+# Do NOT answer the question. Do NOT add facts that are not implied by the question.
+# If the question is already standalone, return it unchanged.
 
-User question: {question}
+# User question: {question}
 
-Standalone search query:"""
+# Standalone search query:"""
 
 
-def rewrite_query(question: str, model: str = GEMINI_CHAT_MODEL) -> str:
-    """
-    Return a retrieval-friendly standalone version of the question.
-    Cost: exactly 1 Gemini call (with backoff). Falls back to the original
-    question if the model returns an empty string — an empty rewrite would
-    silently destroy retrieval quality.
-    """
-    prompt = REWRITE_PROMPT.format(question=question)
-    rewritten = gemini_text(prompt, model=model)
-    return rewritten if rewritten else question
+# def rewrite_query(question: str, model: str = GEMINI_CHAT_MODEL) -> str:
+#     """
+#     Return a retrieval-friendly standalone version of the question.
+#     Cost: exactly 1 Gemini call (with backoff). Falls back to the original
+#     question if the model returns an empty string — an empty rewrite would
+#     silently destroy retrieval quality.
+#     """
+#     prompt = REWRITE_PROMPT.format(question=question)
+#     rewritten = gemini_text(prompt, model=model)
+#     return rewritten if rewritten else question
 
-print(rewrite_query("what about its fine?"))                 # → standalone version
-print(rewrite_query("How many books can a UG student borrow?"))  # → returned unchanged
-print(rewrite_query("and the lab rules too?"))               # → resolved into a full query
+# print(rewrite_query("what about its fine?"))                 # → standalone version
+# print(rewrite_query("How many books can a UG student borrow?"))  # → returned unchanged
+# print(rewrite_query("and the lab rules too?"))               # → resolved into a full query
 
 # *************************************************************************************************
 def mmr_rerank(
@@ -180,3 +180,101 @@ def mmr_rerank(
 # python -c "from P1 import mmr_rerank; print(mmr_rerank([1,0], [[1,0],[0.99,0.1],[0,1],[0.1,0.99]], k=2, lam=0.3))"
 
 # Expected: [0, 2]
+
+# ***************************************************************************************************************************
+_collection = None
+
+
+def _get_collection():
+    """
+    Return the capstone_corpus Chroma collection, failing fast with an
+    actionable message if Day 2's ingest was never run.
+    """
+    global _collection
+    if _collection is None:
+        chroma = chromadb.PersistentClient(path="./chroma_db")
+        try:
+            _collection = chroma.get_collection(COLLECTION_NAME)
+        except Exception:
+            raise SystemExit(
+                f"[Error] Collection '{COLLECTION_NAME}' not found in ./chroma_db.\n"
+                f"        Run Day 2's P4.py first:\n"
+                f"        python P4.py --backend chroma --embedder ollama --input ./sample_corpus"
+            )
+    return _collection
+
+
+def retrieve(
+    question: str,
+    k: int = 5,
+    mmr: bool = False,
+    rewrite: bool = False,
+    lam: float = 0.7,
+) -> Dict[str, Any]:
+    """
+    One retrieval call with three switches. This is Session 1's Chroma-direct
+    lab version (raw vectors needed for MMR); Session 2's rag_engine.py routes
+    through the Day 2 VectorStore abstraction instead so --backend works.
+
+    Returns:
+        {
+          "query_used": str,            # original or rewritten question
+          "results": [ {id, document, metadata, score, embedding}, ... ],
+          "timings": {rewrite_s, embed_s, retrieve_s}
+        }
+    score = cosine similarity (1 - cosine distance); higher = more relevant.
+    """
+    col = _get_collection()
+    timings: Dict[str, float] = {}
+
+    # ── Switch: rewrite (0 or 1 Gemini call) ────────────────────────────────
+    t0 = time.perf_counter()
+    search_q = rewrite_query(question) if rewrite else question
+    timings["rewrite_s"] = round(time.perf_counter() - t0, 3) if rewrite else 0.0
+
+    # ── Always: embed the (possibly rewritten) query ────────────────────────
+    # Same model as ingest — nomic-embed-text — no exceptions.
+    t0 = time.perf_counter()
+    q_emb = embed_query_ollama(search_q)
+    timings["embed_s"] = round(time.perf_counter() - t0, 3)
+
+    # ── Fetch: over-fetch when MMR needs a pool to choose from ──────────────
+    t0 = time.perf_counter()
+    fetch_k = k * FETCH_MULTIPLIER if mmr else k
+    resp = col.query(
+        query_embeddings=[q_emb],
+        n_results=fetch_k,
+        # ids come back automatically; we also want text, metadata, distance AND
+        # the stored vectors (MMR needs the candidate embeddings).
+        include=["documents", "metadatas", "distances", "embeddings"],
+    )
+
+    # Chroma returns nested lists (one list per query vector) — we sent one query.
+    raw: List[Dict[str, Any]] = []
+    for id_, doc, meta, dist, emb in zip(
+        resp["ids"][0],
+        resp["documents"][0],
+        resp["metadatas"][0],
+        resp["distances"][0],
+        resp["embeddings"][0],
+    ):
+        raw.append({
+            "id":        id_,
+            "document":  doc,
+            "metadata":  meta,
+            "score":     1.0 - dist,      # cosine distance → cosine similarity
+            "embedding": list(emb),       # kept only so MMR can operate on it
+        })
+
+    # ── Switch: mmr (re-rank the pool, keep top k) ──────────────────────────
+    if mmr and len(raw) > k:
+        order = mmr_rerank(q_emb, [r["embedding"] for r in raw], k, lam)
+        results = [raw[i] for i in order]
+    else:
+        results = raw[:k]
+    timings["retrieve_s"] = round(time.perf_counter() - t0, 3)
+
+    return {"query_used": search_q, "results": results, "timings": timings}
+
+# Execution of the code: )
+# python -c "from P1 import retrieve; out = retrieve('What is the fine for late book return?', k=3, mmr=True); print('Query used:', out['query_used']); print('Results:'); [print('Score:', round(r['score'], 3), '|', r['document'][:90]) for r in out['results']]"

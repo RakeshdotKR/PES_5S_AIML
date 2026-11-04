@@ -75,3 +75,35 @@ def gemini_text(prompt: str, model: str = GEMINI_CHAT_MODEL, max_retries: int = 
 
 
 print("[retriever] Ready — embedding model:", OLLAMA_EMBED_MODEL, "| chat model:", GEMINI_CHAT_MODEL)
+
+# **************************************************************************************************************
+# Why rewrite? Retrieval matches the query string as-is. Conversational or
+# anaphoric questions ("what about its fine?") embed poorly because the vector
+# store has no memory of what "its" refers to. ONE extra Gemini call before
+# retrieval converts them into standalone search queries.
+
+REWRITE_PROMPT = """You are a search-query rewriter for a document retrieval system.
+Rewrite the user question as a single standalone search query that could be
+matched against a campus handbook. Resolve pronouns and conversation references.
+Do NOT answer the question. Do NOT add facts that are not implied by the question.
+If the question is already standalone, return it unchanged.
+
+User question: {question}
+
+Standalone search query:"""
+
+
+def rewrite_query(question: str, model: str = GEMINI_CHAT_MODEL) -> str:
+    """
+    Return a retrieval-friendly standalone version of the question.
+    Cost: exactly 1 Gemini call (with backoff). Falls back to the original
+    question if the model returns an empty string — an empty rewrite would
+    silently destroy retrieval quality.
+    """
+    prompt = REWRITE_PROMPT.format(question=question)
+    rewritten = gemini_text(prompt, model=model)
+    return rewritten if rewritten else question
+
+print(rewrite_query("what about its fine?"))                 # → standalone version
+print(rewrite_query("How many books can a UG student borrow?"))  # → returned unchanged
+print(rewrite_query("and the lab rules too?"))               # → resolved into a full query

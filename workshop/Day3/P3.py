@@ -365,6 +365,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
+
 # Execution (run all four — this is the acceptance test):
 
 #  # 1) Baseline: plain top-k, Gemini, streamed, cited

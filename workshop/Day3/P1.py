@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 
 import numpy as np          # MMR matrix math
 import ollama               # local embedding path
-import chromadb             # direct Chroma access for the raw-vector A/B lab
+import chromadb             
 from dotenv import load_dotenv
 from google import genai    # Gemini client for query rewriting + generation
 

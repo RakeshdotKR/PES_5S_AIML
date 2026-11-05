@@ -38,7 +38,7 @@ load_dotenv()
 
 # ── Free-tier brain configuration (same models as Days 1-3) ──────────────────
 GEMINI_MODEL = "gemini-3.6-flash"   # cloud, free. Out of daily quota? Try "gemini-3.8-flash" (also free, may 503).
-OLLAMA_MODEL = "gemma2:4b"          # local, 8 GB RAM friendly (fallback: gemma3:1b)
+OLLAMA_MODEL = "gemma2:2b"          # local, 8 GB RAM friendly (fallback: gemma3:1b)
 
 MAX_ITERATIONS = 5                  # kill-switch — Day 5 turns this into a full guardrail (budget + allow-list)
 
@@ -220,3 +220,5 @@ def build_agent_graph(brain: str = "gemini"):
     return builder.compile()
 
 # Execution: python -c "import D4P2; g = D4P2.build_agent_graph(); print('graph built:', [n for n in g.get_graph().nodes])"
+# python -c "import D4P2; print(D4P2.make_llm('ollama').invoke('Reply with: Ollama connection successful'))"
+# python -c "import D4P2; print(D4P2.search_knowledge_base.invoke({'question':'What are the library timings?'}))"

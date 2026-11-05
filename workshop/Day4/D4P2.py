@@ -87,3 +87,136 @@ def make_llm(brain: str = "gemini"):
 # Execution
 # python -c "import P2; print('header OK')"
 
+# ***************************************************************************************************************
+@tool
+def search_knowledge_base(question: str) -> Dict[str, Any]:
+    """
+    Search the campus handbook knowledge base and return an answer with citations.
+    Use this for ANY fact about the college: library rules, fees, labs, attendance,
+    scholarships, hostel, exams. The result contains 'abstained=true' when the
+    handbook does not cover the topic — in that case DO NOT search again; tell
+    the user the information is not in the knowledge base.
+    """
+    try:
+        # Day 3 engine, unchanged. The INNER generator stays gemini-3.6-flash
+        # even when the OUTER brain is swapped — this isolates DECISION quality
+        # in Session 2's brain-swap study (only the brain choosing tools moves).
+        result = rag_answer(question, backend="chroma", llm="gemini", topk=5)
+        return {
+            "answer":    result["text"],
+            "citations": result["citations"],
+            "abstained": result["abstained"],
+        }
+    except Exception as e:
+        # Errors become JSON OBSERVATIONS, not exceptions — the model reads
+        # them and can self-correct. (Day 5 makes this a guardrail rule.)
+        return {"error": f"search failed: {e}"}
+
+
+@tool
+def calculator(expression: str) -> Dict[str, Any]:
+    """
+    Evaluate a mathematical expression and return the numeric result. Use this
+    whenever arithmetic is needed over numbers found in tool results (fees,
+    fines, totals, percentages). Supports +, -, *, /, ** and parentheses.
+    Numeric expression only — no units, no words. Example: '12 * 5'.
+    """
+    try:
+        # Same safe-eval allowlist as Days 1/3: empty __builtins__ => the
+        # string cannot import modules or touch attributes. Never eval
+        # untrusted strings without this pattern.
+        value = eval(expression, {"__builtins__": {}}, {"abs": abs, "round": round})
+        return {"result": round(float(value), 6)}
+    except Exception as e:
+        return {"error": f"could not evaluate '{expression}': {e}"}
+
+
+# The tool list the model sees (order = preference hint for small models).
+AGENT_TOOLS = [search_knowledge_base, calculator]
+
+# System instruction: role + citation habit + the abstain-not-guess rule.
+# (Same contract as naive_agent.py — behavior must match.)
+SYSTEM_PROMPT = """You are a campus knowledge agent.
+- For any fact about the college, call search_knowledge_base.
+- For arithmetic over retrieved numbers, call calculator.
+- Call ONE tool at a time so results stay easy to follow.
+- If a search returns abstained=true, do not retry the search — answer that the
+  information is not in the knowledge base.
+- Cite handbook facts using the citation markers returned by the search tool.
+- Never invent handbook rules, fees, or dates."""
+
+class AgentState(TypedDict):
+    """
+    The state that flows through the agent graph — the three fields the
+    curriculum requires, each with a job:
+      messages         full conversation history (reducer: append)
+      tool_call_count  cost/observability — tool calls spent this run
+      iterations       loop guard — agent-node executions (cap = MAX_ITERATIONS)
+    """
+    messages: Annotated[list, add_messages]
+    tool_call_count: int
+    iterations: int
+
+
+def build_agent_graph(brain: str = "gemini"):
+    r"""
+    (different brains) without editing code. Session 2 extends this signature
+    with require_approval / auto_approve / checkpointer — the node logic below
+    does not change.
+
+    Graph shape (the naive_agent.py while-loop, drawn):
+
+        START -> agent --(tool calls?)--> tools --> agent --(tool calls?)--> ...
+                       \--(final text / cap reached)--> END
+    """
+    # Bind tools ONCE per compiled graph (binding is cheap, but doing it once
+    # mirrors how production agents configure their model at startup).
+    llm_with_tools = make_llm(brain).bind_tools(AGENT_TOOLS)
+
+    def agent_node(state: AgentState) -> dict:
+        """One LLM call. Returns a partial update: the model's message plus
+        the two counters. System message is prepended here (not stored in
+        state) so history stays user/assistant/tool only."""
+        response = llm_with_tools.invoke(
+            [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+        )
+        return {
+            "messages": [response],
+            # Increment by the number of calls this response made (usually 0 or 1).
+            "tool_call_count": state.get("tool_call_count", 0) + len(response.tool_calls),
+            "iterations": state.get("iterations", 0) + 1,
+        }
+
+    def should_continue(state: AgentState) -> str:
+        """
+        THE conditional edge — 'did the model request a tool?'
+
+        The prebuilt `tools_condition` (from langgraph.prebuilt) returns
+        exactly "tools" or "__end__" for this same check. We write our own
+        because we ALSO need the iteration kill-switch — the Day 5 guardrail
+        preview: no runaway loops, ever, regardless of what the model wants.
+        """
+        if state.get("iterations", 0) >= MAX_ITERATIONS:
+            return "__end__"                       # cap hit: stop, even mid-tooling
+        last = state["messages"][-1]
+        if getattr(last, "tool_calls", None):      # model asked for a tool
+            return "tools"
+        return "__end__"                           # final text: done
+
+    builder = StateGraph(AgentState)
+    builder.add_node("agent", agent_node)          # the LLM decision step
+    builder.add_node("tools", ToolNode(AGENT_TOOLS))  # executes tools, emits ToolMessages
+    builder.add_edge(START, "agent")
+    builder.add_conditional_edges(
+        "agent",
+        should_continue,
+        # path_map: what each return value means (name -> node, "__end__" -> END)
+        {"tools": "tools", "__end__": END},
+    )
+    builder.add_edge("tools", "agent")             # THE LOOP: tools -> agent -> ...
+
+    # Session 1: no checkpointer — every invoke starts from scratch (stateless,
+    # exactly like naive_agent.py). Session 2 passes MemorySaver() here.
+    return builder.compile()
+
+# Execution: python -c "import D4P2; g = D4P2.build_agent_graph(); print('graph built:', [n for n in g.get_graph().nodes])"

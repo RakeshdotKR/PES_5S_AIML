@@ -33,9 +33,10 @@ Day 3:
 Day 4:
 *********************************
 1. Activate the virtual environment
-2. Inside virtual environment: pip install langgraph langchain langchain-google-genai langchain-ollama
-3. Inside virtual environment: set PYTHONIOENCODING=utf-8
-4. Create Day4 folder.
-5. Copy chroma_db from Day3 folder & paste it to Day4 folder
+2. Create Day4 folder.
+3. Copy chroma_db from Day3 folder & paste it to Day4 folder
+4. Inside virtual environment: pip install langgraph langchain langchain-google-genai langchain-ollama
+5. Inside virtual environment: set PYTHONIOENCODING=utf-8
+
 
 

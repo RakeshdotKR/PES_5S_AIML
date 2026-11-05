@@ -33,6 +33,7 @@ Day 3:
 Day 4:
 *********************************
 1. Activate the virtual environment
-2. pip install langgraph langchain langchain-google-genai langchain-ollama
+2. Inside virtual environment: pip install langgraph langchain langchain-google-genai langchain-ollama
+3. Inside virtual environment: set PYTHONIOENCODING=utf-8
 
 

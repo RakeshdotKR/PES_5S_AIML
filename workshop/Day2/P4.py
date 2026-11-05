@@ -228,7 +228,7 @@ def ingest(
     print(f"[3/4] Embedded {len(all_embeddings)} chunks (dim={dim}) in {time.perf_counter()-t_embed:.2f}s")
 
     # Step 4 — Upsert into vector store
-    from P2 import get_vector_store
+    from workshop.Day2.D2P2 import get_vector_store
     t_store = time.perf_counter()
 
     store = get_vector_store(backend=backend, collection_name=collection, dim=dim)

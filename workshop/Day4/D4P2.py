@@ -222,3 +222,101 @@ def build_agent_graph(brain: str = "gemini"):
 # Execution: python -c "import D4P2; g = D4P2.build_agent_graph(); print('graph built:', [n for n in g.get_graph().nodes])"
 # python -c "import D4P2; print(D4P2.make_llm('ollama').invoke('Reply with: Ollama connection successful'))"
 # python -c "import D4P2; print(D4P2.search_knowledge_base.invoke({'question':'What are the library timings?'}))"
+
+
+# ***********************************************************************************************************************************
+def run_agent(question: str, brain: str = "gemini") -> str:
+    """
+    One question through the graph (Session 1 version — stateless).
+    Compiling per call is cheap; Session 2 replaces this with a version that
+    reuses ONE compiled graph so memory persists across calls.
+    """
+    graph = build_agent_graph(brain=brain)
+    state = graph.invoke({
+        "messages": [("user", question)],
+        "tool_call_count": 0,      # per-run counters: reset on every new question
+        "iterations": 0,
+    })
+    return msg_text(state["messages"][-1])
+
+
+def trace_agent(question: str, brain: str = "gemini") -> None:
+    """
+    Same graph, stream_mode="updates" — students SEE the loop:
+      [agent] -> [tools] -> [agent] -> ... -> END
+    This is the framework's gift: yesterday's while-loop was invisible;
+    today every iteration is a printed line with counters attached.
+    """
+    graph = build_agent_graph(brain=brain)
+    print(f"[trace] {question}")
+    for update in graph.stream({"messages": [("user", question)],
+                                "tool_call_count": 0, "iterations": 0},
+                               stream_mode="updates"):
+        node = list(update.keys())[0]
+        payload = update[node]
+        if node == "agent":
+            last = payload["messages"][-1]
+            if last.tool_calls:
+                names = [tc["name"] for tc in last.tool_calls]
+                detail = f"TOOL CALL -> {names}"
+            else:
+                detail = "FINAL: " + msg_text(last)[:110]
+            print(f"  [agent] iter={payload.get('iterations')} tools_total="
+                  f"{payload.get('tool_call_count')} {detail}")
+        elif node == "tools":
+            # ToolNode returns {"messages": [ToolMessage, ...]}
+            print(f"  [tools] {msg_text(payload['messages'][-1])[:110]}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Day 4 — LangGraph agent (Session 1)")
+    parser.add_argument("--question", default=None,
+                        help="Single question (omit for interactive REPL)")
+    parser.add_argument("--brain", default="gemini", choices=["gemini", "ollama"],
+                        help="Outer brain: gemini-3.6-flash (default) or gemma3:4b")
+    parser.add_argument("--trace", action="store_true",
+                        help="Print the per-node execution trace (stream_mode=updates)")
+    args = parser.parse_args()
+
+    if args.question:
+        if args.trace:
+            trace_agent(args.question, args.brain)
+        else:
+            print(run_agent(args.question, args.brain))
+        return
+
+    # Interactive REPL — the class demo loop. Exceptions never kill the session.
+    print("=" * 66)
+    print(f"  LANGGRAPH AGENT — brain={args.brain} (stateless, Session 1)")
+    print("  Type a question. Type 'quit' to exit.")
+    print("=" * 66)
+    while True:
+        q = input("\nYou: ").strip()
+        if q.lower() in ("quit", "exit", "q"):
+            print("Goodbye.")
+            break
+        if not q:
+            continue
+        try:
+            print("Agent:", run_agent(q, args.brain))
+        except Exception as e:
+            # Free-tier reality: surface 429s with an actionable next step.
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                print("[quota] Gemini daily quota exhausted. Re-run with --brain ollama "
+                      "or retry after the Pacific-time reset.")
+            else:
+                print(f"[error] {type(e).__name__}: {str(e)[:200]}")
+
+
+if __name__ == "__main__":
+    main()
+
+# Execution:
+# # 1) SINGLE-HOP — expect: one search, then final text (1-2 iterations)
+# python D4P2.py --question "What are the library opening hours?" --trace
+
+# # 2) MULTI-HOP — expect: search -> calculator -> cited final with the Rs 60 math
+# python D4P2.py --question "A book is 12 days overdue. According to the handbook, what fine do I owe for the late return? Show the calculation and cite the regulation." --trace
+
+# # 3) OFF-CORPUS — expect: <=1 search, honest refusal, NO invented citations
+# python D4P2.py --question "Who won the FIFA World Cup in 2022?" --trace

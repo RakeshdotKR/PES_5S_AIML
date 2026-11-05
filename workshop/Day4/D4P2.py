@@ -158,7 +158,12 @@ class AgentState(TypedDict):
     iterations: int
 
 
-def build_agent_graph(brain: str = "gemini"):
+def build_agent_graph(
+    brain: str = "gemini",
+    require_approval: bool = False,   # Step 3: pause before tool execution
+    auto_approve: bool = False,       # Step 3: unattended runs (brain-swap)
+    checkpointer=None,                # Session 2: pass MemorySaver()
+):
     r"""
     (different brains) without editing code. Session 2 extends this signature
     with require_approval / auto_approve / checkpointer — the node logic below
@@ -217,7 +222,7 @@ def build_agent_graph(brain: str = "gemini"):
 
     # Session 1: no checkpointer — every invoke starts from scratch (stateless,
     # exactly like naive_agent.py). Session 2 passes MemorySaver() here.
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer) 
 
 # Execution: python -c "import D4P2; g = D4P2.build_agent_graph(); print('graph built:', [n for n in g.get_graph().nodes])"
 # python -c "import D4P2; print(D4P2.make_llm('ollama').invoke('Reply with: Ollama connection successful'))"
@@ -225,20 +230,27 @@ def build_agent_graph(brain: str = "gemini"):
 
 
 # ***********************************************************************************************************************************
-def run_agent(question: str, brain: str = "gemini") -> str:
-    """
-    One question through the graph (Session 1 version — stateless).
-    Compiling per call is cheap; Session 2 replaces this with a version that
-    reuses ONE compiled graph so memory persists across calls.
-    """
-    graph = build_agent_graph(brain=brain)
-    state = graph.invoke({
-        "messages": [("user", question)],
-        "tool_call_count": 0,      # per-run counters: reset on every new question
-        "iterations": 0,
-    })
-    return msg_text(state["messages"][-1])
+# def run_agent(question: str, brain: str = "gemini") -> str:
+#     """
+#     One question through the graph (Session 1 version — stateless).
+#     Compiling per call is cheap; Session 2 replaces this with a version that
+#     reuses ONE compiled graph so memory persists across calls.
+#     """
+#     graph = build_agent_graph(brain=brain)
+#     state = graph.invoke({
+#         "messages": [("user", question)],
+#         "tool_call_count": 0,      # per-run counters: reset on every new question
+#         "iterations": 0,
+#     })
+#     return msg_text(state["messages"][-1])
 
+def run_agent(question: str, brain: str = "gemini",
+              thread_id: str = "session-1", graph=None) -> str:
+    """Session 2: same signature + thread_id. Pass `graph` to REUSE one
+    compiled graph (memory persists); omit it and a fresh stateless graph
+    is compiled (fine for one-shot demos — its memory dies with the call)."""
+    g = graph or build_agent_graph(brain=brain, checkpointer=MemorySaver())
+    return ask(g, question, make_config(thread_id))
 
 def trace_agent(question: str, brain: str = "gemini") -> None:
     """
@@ -268,22 +280,162 @@ def trace_agent(question: str, brain: str = "gemini") -> None:
             print(f"  [tools] {msg_text(payload['messages'][-1])[:110]}")
 
 
+
+
+# *********************************************************************************************
+def make_config(thread_id: str) -> dict:
+    """
+    EVERY graph call on a checkpointer needs this config. thread_id is the
+    memory key — like a session id in a chat app. Same thread = same memory;
+    different thread = blank slate. (Without a checkpointer this config is
+    simply ignored, so code can pass it unconditionally.)
+    """
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def ask(graph, question: str, cfg: dict) -> str:
+    """
+    Run ONE question against a compiled graph — and if the graph pauses for
+    human approval (Session 2, Step 3), keep asking until it finishes.
+    Shared by --question mode, the REPL, and the HITL demo: one invoke path
+    in the whole codebase.
+    """
+    state = graph.invoke({
+        "messages": [("user", question)],
+        "tool_call_count": 0,     # per-run counters reset each question
+        "iterations": 0,
+    }, config=cfg)
+
+    # Loop (not just an if): a run can interrupt MORE than once — e.g. the
+    # model approves one calculator call, then asks for another on a later turn.
+    while "__interrupt__" in state:
+        payload = state["__interrupt__"][0].value   # what interrupt() paused with
+        decision = approval_cli(payload)            # defined in Step 3
+        state = graph.invoke(Command(resume=decision), config=cfg)
+
+    return msg_text(state["messages"][-1])
+
+def demo_memory(brain: str = "gemini") -> None:
+    """
+    5-turn, two-thread memory test (the Session 2 deliverable check):
+      thread 'arun' — 3 turns: name/roll given, then RECALLED (needs history)
+      thread 'bipin'   — 2 turns: independent memory, must NOT know Arun
+    Then state inspection: what does the checkpointer think is happening?
+    """
+    # ONE graph for both threads — threads are just different memory keys.
+    graph = build_agent_graph(brain=brain, checkpointer=MemorySaver())
+
+    alice_turns = [
+        "Hello! My name is Arun and my roll number is 42. Remember these.",
+        "What is my name?",          # cannot answer without turn-1 history
+        "What is my roll number?",
+    ]
+    for i, q in enumerate(alice_turns, 1):
+        answer = ask(graph, q, make_config("arun"))
+        print(f"[arun #{i}] Q: {q}")
+        print(f"[arun #{i}] A: {answer[:150]}")
+
+    # State inspection — the two fields you will use all day:
+    #   .next    which nodes would run next (() = finished/idle)
+    #   .values  the full stored state
+    snap = graph.get_state(make_config("arun"))
+    print(f"\n[inspect] thread=arun  next={snap.next}  "
+          f"stored_messages={len(snap.values['messages'])}")
+
+    # Second thread — same graph, blank memory. Must NOT say "Arun".
+    answer = ask(graph, "What is my name?", make_config("bipin"))
+    print(f"[bipin] A: {answer[:150]}   <- must NOT reveal Arun")
+    print("[memory] PASS if bipin's answer shows no knowledge of Arun/42.")
+
+
+def demo_timetravel(brain: str = "gemini") -> None:
+    """
+    Rewind + re-decide (the 5-minute class demo):
+      1) run a question that triggers a tool -> graph pauses at interrupt
+      2) inspect get_state_history()  (returns NEWEST FIRST)
+      3) FORK from the waiting-at-tools checkpoint:
+           invoke(None, {thread_id, checkpoint_id})
+         -> re-executes from that snapshot and PAUSES AGAIN
+      4) decide differently this time: Command(resume="reject")
+
+    CAUTION (verified while writing this lab): do NOT pass
+    Command(resume=...) together with checkpoint_id in ONE invoke.
+    LangGraph then replays the ORIGINAL branch's saved writes and your new
+    decision is silently ignored — always fork first, resume second.
+    """
+    # Approval must be ON, or there is no interrupt point to rewind to.
+    graph = build_agent_graph(brain=brain, require_approval=True,
+                              checkpointer=MemorySaver())
+    tid = "timetravel-demo"
+    cfg = make_config(tid)
+
+    state = graph.invoke({"messages": [("user", "What is 12 * 5?")],
+                          "tool_call_count": 0, "iterations": 0}, config=cfg)
+    print("[1] paused at:", graph.get_state(cfg).next)        # -> ('tools',)
+
+    # History is NEWEST FIRST: [0] = latest snapshot.
+    history = list(graph.get_state_history(cfg))
+    for i, snap in enumerate(history):
+        print(f"    [{i}] next={snap.next}")
+
+    # Find the snapshot where the graph was WAITING to run tools...
+    target = next(s for s in history if s.next == ("tools",))
+    checkpoint_id = target.config["configurable"]["checkpoint_id"]
+
+    # ...and fork from it. No resume yet: the fork re-runs and pauses again.
+    fork_cfg = {"configurable": {"thread_id": tid, "checkpoint_id": checkpoint_id}}
+    graph.invoke(None, config=fork_cfg)
+    print("[2] forked; paused again at:", graph.get_state(fork_cfg).next)
+
+    # THIS time the human decides differently -> a different branch of history.
+    state = graph.invoke(Command(resume="reject"), config=cfg)
+    print("[3] after reject:", msg_text(state["messages"][-1])[:140])
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Day 4 — LangGraph agent (Session 1)")
-    parser.add_argument("--question", default=None,
-                        help="Single question (omit for interactive REPL)")
-    parser.add_argument("--brain", default="gemini", choices=["gemini", "ollama"],
-                        help="Outer brain: gemini-3.6-flash (default) or gemma3:4b")
-    parser.add_argument("--trace", action="store_true",
-                        help="Print the per-node execution trace (stream_mode=updates)")
+    parser = argparse.ArgumentParser(
+        description="Day 4 — LangGraph agent"
+    )
+
+    parser.add_argument("--question", default=None)
+
+    parser.add_argument(
+        "--brain",
+        default="gemini",
+        choices=["gemini", "ollama"]
+    )
+
+    parser.add_argument(
+        "--trace",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--demo",
+        choices=["memory", "timetravel"],
+        default=None
+    )
+
     args = parser.parse_args()
 
+    # Demo execution
+    if args.demo == "memory":
+        demo_memory(args.brain)
+        return
+
+    if args.demo == "timetravel":
+        demo_timetravel(args.brain)
+        return
+
+    # Existing question execution
     if args.question:
         if args.trace:
             trace_agent(args.question, args.brain)
         else:
             print(run_agent(args.question, args.brain))
         return
+
+    # Existing interactive REPL continues here
 
     # Interactive REPL — the class demo loop. Exceptions never kill the session.
     print("=" * 66)
@@ -320,3 +472,6 @@ if __name__ == "__main__":
 
 # # 3) OFF-CORPUS — expect: <=1 search, honest refusal, NO invented citations
 # python D4P2.py --question "Who won the FIFA World Cup in 2022?" --trace
+
+# Execution:    python D4P2.py --demo memory
+#               python D4P2.py --demo timetravel

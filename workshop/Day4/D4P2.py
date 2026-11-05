@@ -210,7 +210,8 @@ def build_agent_graph(
 
     builder = StateGraph(AgentState)
     builder.add_node("agent", agent_node)          # the LLM decision step
-    builder.add_node("tools", ToolNode(AGENT_TOOLS))  # executes tools, emits ToolMessages
+    # builder.add_node("tools", ToolNode(AGENT_TOOLS))  # executes tools, emits ToolMessages
+    builder.add_node("tools", make_tools_node(require_approval, auto_approve))
     builder.add_edge(START, "agent")
     builder.add_conditional_edges(
         "agent",
@@ -391,6 +392,70 @@ def demo_timetravel(brain: str = "gemini") -> None:
     state = graph.invoke(Command(resume="reject"), config=cfg)
     print("[3] after reject:", msg_text(state["messages"][-1])[:140])
 
+def make_tools_node(require_approval: bool, auto_approve: bool):
+    """
+    Build the graph's tools node with an optional human approval gate.
+
+    WHY dynamic interrupt() instead of compile(interrupt_before=["tools"]):
+    interrupt_before pauses the graph but carries NO payload into the node —
+    there is nowhere for the approver's yes/no to land. interrupt() pauses
+    AND returns the human's decision as the value the node continues with.
+    Approvals need the payload; dynamic is the only correct choice.
+    """
+    raw_tools = ToolNode(AGENT_TOOLS)   # still does the real execution
+
+    def tools_node(state: AgentState) -> dict:
+        last = state["messages"][-1]
+        pending = [{"name": tc["name"], "args": tc["args"]}
+                   for tc in (getattr(last, "tool_calls", None) or [])]
+
+        if require_approval and not auto_approve:
+            # *** THE PAUSE *** — invoke() returns control to the caller with
+            # state["__interrupt__"] set; resume with Command(resume=...).
+            # The payload is what approval_cli() shows the human.
+            decision = interrupt({"action": "approve_tool_calls",
+                                  "tool_calls": pending})
+        else:
+            decision = "approve"   # unattended mode: brain-swap, demos, REPL
+
+        if decision != "approve":
+            # Rejection is a MESSAGE (role: user), not an exception — the model
+            # reads it next turn and can change course. Exceptions kill runs;
+            # observations enable self-correction (Day 5 guardrail rule).
+            return {"messages": [HumanMessage(
+                content="The human REJECTED this tool call. Do not call any tools "
+                        "now; tell the user the action was not approved.")]}
+        return raw_tools.invoke(state)   # approved -> ToolNode executes for real
+
+    return tools_node
+
+
+def approval_cli(payload: dict) -> str:
+    """Tiny approval UX: show the pending tool calls, ask y/n (loop until valid)."""
+    print("\n=== HUMAN APPROVAL REQUIRED ===")
+    for tc in payload.get("tool_calls", []):
+        # json.dumps for readable args (ASCII-safe output on Windows consoles)
+        print(f"  {tc['name']}({json.dumps(tc['args'])})")
+    while True:
+        answer = input("Approve? [y/n]: ").strip().lower()
+        if answer in ("y", "yes"):
+            return "approve"
+        if answer in ("n", "no"):
+            return "reject"
+        print("Type y or n.")
+
+
+def demo_hitl(brain: str = "gemini") -> None:
+    """Both branches of the gate, on separate threads (separate memories)."""
+    graph = build_agent_graph(brain=brain, require_approval=True,
+                              checkpointer=MemorySaver())
+
+    print("--- case A: APPROVE the calculator ---")
+    print("A ->", ask(graph, "What is 12 * 5?", make_config("hitl-approve")))
+
+    print("\n--- case B: REJECT the calculator ---")
+    print("B ->", ask(graph, "What is 12 * 5?", make_config("hitl-reject")))
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -412,7 +477,7 @@ def main() -> None:
 
     parser.add_argument(
         "--demo",
-        choices=["memory", "timetravel"],
+        choices=["memory", "timetravel", "hitl"],
         default=None
     )
 
@@ -425,6 +490,10 @@ def main() -> None:
 
     if args.demo == "timetravel":
         demo_timetravel(args.brain)
+        return
+
+    if args.demo == "hitl":
+        demo_hitl(args.brain)
         return
 
     # Existing question execution
@@ -475,3 +544,6 @@ if __name__ == "__main__":
 
 # Execution:    python D4P2.py --demo memory
 #               python D4P2.py --demo timetravel
+
+
+# Execution:    python D4P2.py --demo hitl

@@ -39,4 +39,9 @@ Day 4:
 5. Inside virtual environment: set PYTHONIOENCODING=utf-8
 
 
-
+*********************************
+Day 5:
+*********************************
+1. Activate the virtual environment
+2. Create Day5 folder.
+3. Copy chroma_db from Day4 folder & paste it to Day5 folder

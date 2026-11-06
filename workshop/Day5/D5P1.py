@@ -268,3 +268,74 @@ def build_multi(brain: str = "gemini"):
 # Execution: python -c "import D5P1; g = D5P1.build_multi(); print('multi-agent graph OK')"
 
 # *****************************************************************************************************
+# The real learning: three questions a FIXED pipeline cannot handle well.
+STRESS_TESTS = [
+    # 1) OFF-CORPUS — specialist must abstain; synthesizer must relay honestly.
+    #    Watch for: zero invented citations, no confident world-knowledge answer.
+    "Who won the FIFA World Cup in 2022?",
+
+    # 2) AMBIGUOUS — orchestrator must choose 'clarify' and the turn must END
+    #    with a clarifying question (HITL-lite), not a guessed answer.
+    "How do I pay?",
+
+    # 3) MULTI-HOP — retrieval (find the Rs 5/day rate + the regulation) then
+    #    calculator (12 * 5) then synthesis WITH citations. The question a
+    #    fixed retrieve-once pipeline fails.
+    "A book is 12 days overdue at 5 rupees per day. What fine do I owe? "
+    "Show the calculation and cite the regulation.",
+]
+
+
+def run_multi(question: str, brain: str = "gemini") -> str:
+    """One question through the multi-agent graph. Prints the route decision —
+    seeing WHICH specialist ran is half the learning in this lab."""
+    graph = build_multi(brain=brain)
+    state = graph.invoke({
+        "messages": [("user", question)],
+        "question": question,          # orchestrator reads this, not the last msg
+        "route": "",                   # filled by the orchestrator node
+        "route_reason": "",
+        "specialist_output": "",
+    })
+    print(f"  route = {state.get('route')}  ({state.get('route_reason')})")
+    return msg_text(state["messages"][-1])
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Day 5 — orchestrator-worker multi-agent")
+    parser.add_argument("--question", default=None,
+                        help="Single question (omit to run the 3 stress tests)")
+    parser.add_argument("--brain", default="gemini", choices=["gemini", "ollama"],
+                        help="Outer brains (orchestrator/general/synthesizer); "
+                             "retrieval's inner engine stays gemini")
+    # --fail-once / --fail-always / --reflect arrive with Steps 5-6.
+    # --demo redteam|allowlist arrives with Session 2.
+    args = parser.parse_args()
+
+    questions = [args.question] if args.question else STRESS_TESTS
+    for q in questions:
+        print("\n" + "=" * 66)
+        print(f"Q: {q}")
+        try:
+            print("A:", run_multi(q, brain=args.brain))
+        except Exception as e:
+            # Free-tier reality check first: quota errors get an action plan.
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                print("[quota] Gemini daily quota exhausted — re-run with --brain ollama.")
+            else:
+                print(f"[error] {type(e).__name__}: {str(e)[:200]}")
+
+    if not args.question:
+        print("\n" + "=" * 66)
+        print("  REFLECTION — what just happened?")
+        print("  One graph, THREE specialists, decided per question by ONE")
+        print("  classification call. Draw your capstone on the canvas now.")
+        print("=" * 66)
+
+
+if __name__ == "__main__":
+    main()
+
+# **Execution 
+# python D5P1.py            # the 3 stress tests — this IS the Session 1 acceptance
+# python D5P1.py --question "What are the library opening hours?"   # single-hop spot check

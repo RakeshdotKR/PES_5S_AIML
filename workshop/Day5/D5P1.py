@@ -54,6 +54,7 @@ class MultiState(TypedDict):
     route: str
     route_reason: str
     specialist_output: str
+    specialist_status: str 
 
 
 # ── Orchestrator prompt: strict JSON out (your Day 1 JSON-mode skill) ────────
@@ -82,6 +83,8 @@ The orchestrator routed the question to the '{route}' specialist. Its findings:
 
 {specialist_output}
 
+Specialist status: {specialist_status}
+
 Question: {question}
 
 Rules:
@@ -92,6 +95,8 @@ Rules:
    honestly. Do not add facts from your own knowledge.
 4. If the specialist returned a clarifying question, pass it through as-is.
 5. Keep it to 2-6 sentences unless the question needs more.
+6. If the status shows ':failed' or the findings say [DEGRADED], relay the
+   failure honestly and suggest retrying — never paper over it with a guess.
 """
 
 
@@ -114,7 +119,66 @@ def _parse_route(text: str) -> Optional[dict]:
 # Execution: python -c "import D5P1; print('step 1 OK')"
 
 # *****************************************************************************
-def build_multi(brain: str = "gemini"):
+def contain(name: str, fn: Callable[[MultiState], dict],
+            fail_once: Optional[str] = None,
+            fail_always: Optional[str] = None) -> Callable[[MultiState], dict]:
+    """
+    FAILURE CONTAINMENT WRAPPER — the Session 1 hardening lesson.
+
+    Any exception inside a wrapped node becomes a DEGRADED state update, so
+    the graph keeps flowing to the synthesizer instead of dying with a
+    traceback. Policy: retry ONCE, then degrade honestly.
+
+    Failure-injection flags (the failure-injection drill):
+      fail_once  == name  -> attempt 1 raises (attempt 2 succeeds: shows RETRY)
+      fail_always == name -> every attempt raises (shows DEGRADE)
+
+    The counters are per build_multi() call — injection demos run ONE question
+    at a time, which keeps this honest without extra state plumbing.
+    """
+    attempts_made = {"n": 0}
+
+    def wrapper(state: MultiState) -> dict:
+        last_error: Optional[Exception] = None
+        for attempt in (1, 2):                       # policy: ONE retry
+            attempts_made["n"] += 1
+            try:
+                injected = (fail_always == name
+                            or (fail_once == name and attempt == 1))
+                if injected:
+                    raise RuntimeError(
+                        f"simulated crash in {name} (attempt {attempt})")
+                out = fn(state)
+                # Status tells the story: ok, or recovered on the retry.
+                # PRESERVE an earlier specialist's status: the synthesizer
+                # must not mask "general_specialist:failed" with its own
+                # "ok" — the failure is the fact worth reporting.
+                default_status = (f"{name}:ok" if attempt == 1
+                                  else f"{name}:ok-after-retry")
+                out.setdefault("specialist_status",
+                               state.get("specialist_status") or default_status)
+                return out
+            except Exception as e:                   # catch ALL — contain ALL
+                last_error = e
+                # Real errors get the retry too — but never more than one.
+        # Both attempts failed -> DEGRADE, don't crash. This dict is the whole
+        # point: the run continues, the synthesizer relays the failure honestly.
+        return {
+            "specialist_output": (
+                f"[DEGRADED] The {name} failed "
+                f"({type(last_error).__name__}: {last_error}). Tell the user the "
+                f"request could not be completed right now and suggest retrying."
+            ),
+            "specialist_status": f"{name}:failed",
+            "messages": [AIMessage(
+                content=f"[contained failure] {name}: {last_error}")],
+        }
+
+    return wrapper
+
+def build_multi(brain: str = "gemini",
+                fail_once: Optional[str] = None,     # node name to crash ONCE
+                fail_always: Optional[str] = None):  # node name to crash ALWAYS
     """
     Assemble the orchestrator-worker graph. Nodes that need an LLM close over
     `brain` so --brain ollama swaps EVERY outer brain at once (the retrieval
@@ -243,18 +307,30 @@ def build_multi(brain: str = "gemini"):
             route=state.get("route", "?"),
             question=state.get("question", ""),
             specialist_output=output,
+            specialist_status=state.get("specialist_status", "ok"),
         )
         resp = make_llm(brain).invoke(prompt)
         return {"specialist_output": msg_text(resp), "messages": [resp]}
 
     # ── Wire the graph ─────────────────────────────────────────────────────
     b = StateGraph(MultiState)
+    # b.add_node("orchestrator", orchestrator)
+    # b.add_node("retrieval_specialist", retrieval_specialist)   # nested sub-graph
+    # b.add_node("general_specialist", general_specialist)
+    # b.add_node("clarifier", clarifier)
+    # b.add_node("synthesizer", synthesizer)
+    
     b.add_node("orchestrator", orchestrator)
-    b.add_node("retrieval_specialist", retrieval_specialist)   # nested sub-graph
-    b.add_node("general_specialist", general_specialist)
-    b.add_node("clarifier", clarifier)
-    b.add_node("synthesizer", synthesizer)
-
+    b.add_node("retrieval_specialist",
+               contain("retrieval_specialist", retrieval_specialist,
+                       fail_once, fail_always))
+    b.add_node("general_specialist",
+               contain("general_specialist", general_specialist,
+                       fail_once, fail_always))
+    b.add_node("clarifier", contain("clarifier", clarifier, fail_once, fail_always))
+    b.add_node("synthesizer",
+               contain("synthesizer", synthesizer, fail_once, fail_always))
+    
     b.add_edge(START, "orchestrator")
     # path_map must list EXACTLY the add_node names Send() can target.
     b.add_conditional_edges("orchestrator", route_specialist,
@@ -286,18 +362,20 @@ STRESS_TESTS = [
 ]
 
 
-def run_multi(question: str, brain: str = "gemini") -> str:
-    """One question through the multi-agent graph. Prints the route decision —
-    seeing WHICH specialist ran is half the learning in this lab."""
-    graph = build_multi(brain=brain)
+def run_multi(question: str, brain: str = "gemini",
+              fail_once: Optional[str] = None,
+              fail_always: Optional[str] = None) -> str:
+    graph = build_multi(brain=brain, fail_once=fail_once, fail_always=fail_always)
     state = graph.invoke({
         "messages": [("user", question)],
-        "question": question,          # orchestrator reads this, not the last msg
-        "route": "",                   # filled by the orchestrator node
+        "question": question,
+        "route": "",
         "route_reason": "",
         "specialist_output": "",
+        "specialist_status": "",          # NEW — filled by contain()
     })
     print(f"  route = {state.get('route')}  ({state.get('route_reason')})")
+    print(f"  status = {state.get('specialist_status', 'ok')}")
     return msg_text(state["messages"][-1])
 
 
@@ -308,6 +386,15 @@ def main() -> None:
     parser.add_argument("--brain", default="gemini", choices=["gemini", "ollama"],
                         help="Outer brains (orchestrator/general/synthesizer); "
                              "retrieval's inner engine stays gemini")
+    parser.add_argument("--fail-once", default=None,
+                      choices=["retrieval_specialist", "general_specialist",
+                               "clarifier", "synthesizer"],
+                      help="Simulate a transient crash (retry should recover)")
+    parser.add_argument("--fail-always", default=None,
+                      choices=["retrieval_specialist", "general_specialist",
+                               "clarifier", "synthesizer"],
+                      help="Simulate a permanent crash (must DEGRADE, not die)")
+
     # --fail-once / --fail-always / --reflect arrive with Steps 5-6.
     # --demo redteam|allowlist arrives with Session 2.
     args = parser.parse_args()
@@ -317,7 +404,9 @@ def main() -> None:
         print("\n" + "=" * 66)
         print(f"Q: {q}")
         try:
-            print("A:", run_multi(q, brain=args.brain))
+            print("A:", run_multi(q, brain=args.brain,
+                            fail_once=args.fail_once,
+                            fail_always=args.fail_always))
         except Exception as e:
             # Free-tier reality check first: quota errors get an action plan.
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
@@ -337,7 +426,20 @@ if __name__ == "__main__":
     main()
 
 # **Execution 
+# Phase 1:
 # python D5P1.py            # the 3 stress tests — this IS the Session 1 acceptance
 # python D5P1.py --question "What are the library opening hours?"   # single-hop spot check
 
+# Phase 2:
+# python D5P1.py --question "What are the library opening hours?" --brain ollama
+
+
+# Phase 3:
+# 1) TRANSIENT crash: attempt 1 dies, retry recovers -> status ok-after-retry
+# python D5P1.py --question "A book is 12 days overdue at 5 rupees per day. What fine do I owe?" --fail-once retrieval_specialist
+
+# # 2) PERMANENT crash: both attempts die -> DEGRADED flow, honest final answer
+# python D5P1.py --question "What are the library opening hours?" --fail-always retrieval_specialist
+
+# # 3) CONTROL: no flags — identical to phase 2 (prove the wrapper is transparent)
 # python D5P1.py --question "What are the library opening hours?" --brain ollama

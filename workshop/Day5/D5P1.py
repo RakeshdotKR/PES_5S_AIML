@@ -339,3 +339,5 @@ if __name__ == "__main__":
 # **Execution 
 # python D5P1.py            # the 3 stress tests — this IS the Session 1 acceptance
 # python D5P1.py --question "What are the library opening hours?"   # single-hop spot check
+
+# python D5P1.py --question "What are the library opening hours?" --brain ollama

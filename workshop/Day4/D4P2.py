@@ -38,9 +38,14 @@ load_dotenv()
 
 # ── Free-tier brain configuration (same models as Days 1-3) ──────────────────
 GEMINI_MODEL = "gemini-3.6-flash"   # cloud, free. Out of daily quota? Try "gemini-3.8-flash" (also free, may 503).
-OLLAMA_MODEL = "gemma2:2b"          # local, 8 GB RAM friendly (fallback: gemma3:1b)
+OLLAMA_MODEL = "qwen2.5:7b"          # local, tool-calling capable (gemma3:4b has no tool support)
 
 MAX_ITERATIONS = 5                  # kill-switch — Day 5 turns this into a full guardrail (budget + allow-list)
+
+# Brain used by the search_knowledge_base tool's INNER RAG generation.
+# build_agent_graph(brain=...) sets this so --brain ollama swaps the
+# retrieval generator too (Day 5 brain plumbing).
+SEARCH_LLM = "gemini"
 
 
 def msg_text(message: Any) -> str:
@@ -98,10 +103,9 @@ def search_knowledge_base(question: str) -> Dict[str, Any]:
     the user the information is not in the knowledge base.
     """
     try:
-        # Day 3 engine, unchanged. The INNER generator stays gemini-3.6-flash
-        # even when the OUTER brain is swapped — this isolates DECISION quality
-        # in Session 2's brain-swap study (only the brain choosing tools moves).
-        result = rag_answer(question, backend="chroma", llm="gemini", topk=5)
+        # Day 3 engine, unchanged. The INNER generator follows SEARCH_LLM
+        # (default gemini) so Session 2's brain-swap can move it too.
+        result = rag_answer(question, backend="chroma", llm=SEARCH_LLM, topk=5)
         return {
             "answer":    result["text"],
             "citations": result["citations"],
@@ -176,6 +180,8 @@ def build_agent_graph(
     """
     # Bind tools ONCE per compiled graph (binding is cheap, but doing it once
     # mirrors how production agents configure their model at startup).
+    global SEARCH_LLM
+    SEARCH_LLM = brain                    # search tool's inner generator follows --brain
     llm_with_tools = make_llm(brain).bind_tools(AGENT_TOOLS)
 
     def agent_node(state: AgentState) -> dict:
@@ -351,7 +357,7 @@ def demo_memory(brain: str = "gemini") -> None:
 
 def demo_timetravel(brain: str = "gemini") -> None:
     """
-    Rewind + re-decide (the 5-minute class demo):
+    Rewind + re-decide:
       1) run a question that triggers a tool -> graph pauses at interrupt
       2) inspect get_state_history()  (returns NEWEST FIRST)
       3) FORK from the waiting-at-tools checkpoint:

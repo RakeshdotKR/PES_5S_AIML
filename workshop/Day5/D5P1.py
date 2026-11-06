@@ -29,6 +29,12 @@ sys.path.append(str(project_root))
 
 from Day4.D4P2 import make_llm, msg_text, build_agent_graph, calculator
 
+from guardrails import (GuardrailConfig, BudgetTracker, validate_tool_call,
+                        run_with_timeout, sanitize_text, chaos_check)
+
+GUARD = GuardrailConfig()       # dataclass defaults — capstone tunes THIS
+BUDGET = BudgetTracker(GUARD)   # one per process; run_multi resets it per run
+
 
 @tool
 def get_current_time() -> str:
@@ -75,7 +81,6 @@ Route rules:
 Question: {question}
 
 JSON:"""
-
 
 # ── Synthesizer prompt: the citation-preserving reconciler ──────────────────
 SYNTH_PROMPT = """You are the synthesis layer of a campus multi-agent system.
@@ -176,9 +181,21 @@ def contain(name: str, fn: Callable[[MultiState], dict],
 
     return wrapper
 
-def build_multi(brain: str = "gemini",
-                fail_once: Optional[str] = None,     # node name to crash ONCE
-                fail_always: Optional[str] = None):  # node name to crash ALWAYS
+# ── CRITIQUE_PROMPT: to verify the  ──────────────────
+CRITIQUE_PROMPT = """You are a strict reviewer of campus answers.
+Question: {question}
+Findings the specialist returned:
+{findings}
+Draft answer:
+{draft}
+
+Check the draft: (a) every citation [n] must exist in the findings; (b) no
+fact may be absent from the findings; (c) an abstention must be relayed, not
+replaced with prior knowledge.
+Reply with exactly "OK" if the draft passes ALL checks. Otherwise reply with
+ONLY the corrected draft (same citation style). No preamble either way."""
+
+def build_multi(brain: str = "gemini",fail_once: Optional[str] = None,fail_always: Optional[str] = None,reflect: bool = False):
     """
     Assemble the orchestrator-worker graph. Nodes that need an LLM close over
     `brain` so --brain ollama swaps EVERY outer brain at once (the retrieval
@@ -203,7 +220,10 @@ def build_multi(brain: str = "gemini",
 
         raw = ""
         for _ in range(2):                       # one retry on junk JSON
-            raw = msg_text(llm.invoke(prompt))
+            chaos_check()                        # raises SIMULATED 429 when armed
+            resp = llm.invoke(prompt)
+            BUDGET.record_llm(resp)              # every call is counted
+            raw = msg_text(resp)
             parsed = _parse_route(raw)
             if parsed:
                 return {"route": parsed["route"],
@@ -264,25 +284,37 @@ def build_multi(brain: str = "gemini",
         llm = make_llm(brain).bind_tools([calculator, get_current_time])
         new_msgs: list = []                      # only what THIS node contributes
         for _ in range(3):                       # budget: 3 LLM calls max
+            chaos_check()
             resp = llm.invoke(
                 [SystemMessage(content="You are a math/time specialist. Use tools "
                                         "for arithmetic or dates. Answer concisely.")]
                 + state["messages"] + new_msgs
             )
+            BUDGET.record_llm(resp)
             new_msgs.append(resp)
             if not resp.tool_calls:
                 return {"specialist_output": msg_text(resp), "messages": new_msgs}
             for tc in resp.tool_calls:
-                fn = {"calculator": calculator,
-                      "get_current_time": get_current_time}.get(tc["name"])
-                try:
-                    # @tool objects run via .invoke(args_dict) -> raw return value.
-                    observation = fn.invoke(tc["args"]) if fn else {"error": "unknown tool"}
-                except Exception as e:
-                    observation = {"error": str(e)}   # error -> observation, not crash
+                BUDGET.record_tool(tc["name"])
+                # THE GATE: allow-list + schema validation -> (ok, payload)
+                ok, payload = validate_tool_call(tc["name"], tc["args"], GUARD)
+                if ok:
+                    fn = {"calculator": calculator,
+                          "get_current_time": get_current_time}.get(tc["name"])
+                    # Timeout wraps the EXECUTION; errors -> observations.
+                    observation = run_with_timeout(
+                        lambda fn=fn, args=payload: fn.invoke(args),
+                        GUARD.tool_timeout_s, tc["name"])
+                else:
+                    observation = payload          # blocked: structured refusal
                 content = (observation if isinstance(observation, str)
                            else json.dumps(observation, ensure_ascii=False))
                 new_msgs.append(ToolMessage(content=content, tool_call_id=tc["id"]))
+                # Budget hard-stop mid-loop: honest partial, not a runaway.
+                if BUDGET.violation():
+                    return {"specialist_output":
+                            f"[budget] {BUDGET.violation()}",
+                            "messages": new_msgs}
         # Budget exhausted: return a visible, honest partial result.
         return {"specialist_output": "general specialist hit its 3-call budget",
                 "messages": new_msgs}
@@ -303,14 +335,48 @@ def build_multi(brain: str = "gemini",
         which IS the sub-graph's final answer.
         """
         output = state.get("specialist_output") or msg_text(state["messages"][-1])
+
+        # Untrusted content (retrieved text, specialist output) passes the
+        # tripwire BEFORE it can influence the final answer. Log, don't hide.
+        output, injection_findings = sanitize_text(output)
+        if injection_findings:
+            print(f"[guardrail] injection patterns blocked: {injection_findings}")
+
+        # Budget gate: the synthesis call is the last chance to stop cleanly.
+        violation = BUDGET.violation()
+        if violation:
+            msg = f"[guardrail] {violation}. Stopping honestly instead of overrunning."
+            return {"specialist_output": msg, "messages": [AIMessage(content=msg)]}
+
         prompt = SYNTH_PROMPT.format(
             route=state.get("route", "?"),
             question=state.get("question", ""),
             specialist_output=output,
             specialist_status=state.get("specialist_status", "ok"),
         )
+        chaos_check()
         resp = make_llm(brain).invoke(prompt)
-        return {"specialist_output": msg_text(resp), "messages": [resp]}
+        BUDGET.record_llm(resp)
+        draft_text = msg_text(resp)
+        if reflect:
+            # REFLECTION NODE (generate -> critique -> revise): one extra call
+            # that grades the draft against the findings. 'OK' keeps the draft;
+            # anything else IS the corrected draft (still just one extra call).
+            chaos_check()
+            critique_resp = make_llm(brain).invoke(CRITIQUE_PROMPT.format(
+                question=state.get("question", ""),
+                findings=output,
+                draft=draft_text,
+            ))
+            BUDGET.record_llm(critique_resp)
+            verdict = msg_text(critique_resp)
+            if verdict.strip().upper().startswith("OK"):
+                print("[reflect] draft passed critique (+1 call)")
+            else:
+                draft_text = verdict
+                print("[reflect] draft REVISED by critique (+2 calls)")
+        return {"specialist_output": draft_text,
+                "messages": [AIMessage(content=draft_text)]}
 
     # ── Wire the graph ─────────────────────────────────────────────────────
     b = StateGraph(MultiState)
@@ -364,18 +430,29 @@ STRESS_TESTS = [
 
 def run_multi(question: str, brain: str = "gemini",
               fail_once: Optional[str] = None,
-              fail_always: Optional[str] = None) -> str:
-    graph = build_multi(brain=brain, fail_once=fail_once, fail_always=fail_always)
-    state = graph.invoke({
-        "messages": [("user", question)],
-        "question": question,
-        "route": "",
-        "route_reason": "",
-        "specialist_output": "",
-        "specialist_status": "",          # NEW — filled by contain()
-    })
-    print(f"  route = {state.get('route')}  ({state.get('route_reason')})")
+              fail_always: Optional[str] = None,
+              reflect: bool = False) -> str:
+    BUDGET.reset()               # every run starts with a clean ledger
+    graph = build_multi(brain=brain, fail_once=fail_once,
+                        fail_always=fail_always, reflect=reflect)
+    try:
+        state = graph.invoke({
+            "messages": [("user", question)],
+            "question": question, "route": "", "route_reason": "",
+            "specialist_output": "", "specialist_status": "",
+        })
+    except Exception as e:
+        # Graceful degradation: quota death (real OR simulated) is a MESSAGE,
+        # never a traceback. Same shape as Day 4's quota handling — now tested.
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            print("[chaos/quota] run stopped cleanly. Next step: --brain ollama "
+                  "or retry after the Pacific-midnight reset.")
+            return "[degraded] quota exhausted before the answer could be built — " \
+                   "please retry (option: local brain)."
+        raise                                  # anything else: still visible
+    print(f"  route  = {state.get('route')}  ({state.get('route_reason')})")
     print(f"  status = {state.get('specialist_status', 'ok')}")
+    print(f"  {BUDGET.summary()}")              # THE cost-accounting line
     return msg_text(state["messages"][-1])
 
 
@@ -395,6 +472,10 @@ def main() -> None:
                                "clarifier", "synthesizer"],
                       help="Simulate a permanent crash (must DEGRADE, not die)")
 
+    parser.add_argument("--reflect",
+                        action="store_true",
+                        help="Enable the reflection step")
+
     # --fail-once / --fail-always / --reflect arrive with Steps 5-6.
     # --demo redteam|allowlist arrives with Session 2.
     args = parser.parse_args()
@@ -404,9 +485,9 @@ def main() -> None:
         print("\n" + "=" * 66)
         print(f"Q: {q}")
         try:
-            print("A:", run_multi(q, brain=args.brain,
-                            fail_once=args.fail_once,
-                            fail_always=args.fail_always))
+            # print("A:", run_multi(q, brain=args.brain))
+            # print("A:", run_multi(q, brain=args.brain,fail_once=args.fail_once,fail_always=args.fail_always))
+            print("A:", run_multi(q, brain=args.brain,fail_once=args.fail_once,fail_always=args.fail_always,reflect=args.reflect))
         except Exception as e:
             # Free-tier reality check first: quota errors get an action plan.
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
@@ -418,7 +499,7 @@ def main() -> None:
         print("\n" + "=" * 66)
         print("  REFLECTION — what just happened?")
         print("  One graph, THREE specialists, decided per question by ONE")
-        print("  classification call. Draw your capstone on the canvas now.")
+        print("  classification call.")
         print("=" * 66)
 
 
@@ -443,3 +524,6 @@ if __name__ == "__main__":
 
 # # 3) CONTROL: no flags — identical to phase 2 (prove the wrapper is transparent)
 # python D5P1.py --question "What are the library opening hours?" --brain ollama
+
+# Phase 4:
+# python D5P1.py --question "A book is 12 days overdue at 5 rupees per day. What fine do I owe?" --brain ollama    

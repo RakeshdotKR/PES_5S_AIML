@@ -46,3 +46,21 @@ Day 5:
 2. Create Day5 folder.
 3. Copy chroma_db from Day4 folder & paste it to Day5 folder
 4. ollama pull qwen2.5:3b
+
+
+*********************************
+Day 6:
+*********************************
+1. Activate the virtual environment
+2. Inside virtual environment: set PYTHONIOENCODING=utf-8
+3. Run the following to copy files from different folder to Day6; this is needed for the deployment
+		# from workshop\
+		cd Day6
+		3.1 # Day 5's hardened multi-agent: 						copy ..\Day5\D5P1.py .
+		3.2 # imported by D5P1 (budgets, chaos, allow-list): 		copy ..\Day5\guardrails.py .
+		3.3 # brains, tools, engine — imported as a library: 		copy ..\Day4\D4P2.py .
+		3.4 # corpus (the engine reads ./chroma_db cwd-relative): 	copy ..\Day4\chroma_db .
+		3.5 # engine internals (Day3\ package copy): 				copy ..\Day3\D3P1.py .
+		3.6 copy ..\Day3\D3P2.py .
+		3.7 copy ..\Day3\D3P3.py .
+		3.8 # vector stores — faiss/pinecone/chromadb are: 			copy ..\Day2\D2P2.py .

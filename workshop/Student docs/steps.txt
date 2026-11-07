@@ -69,3 +69,10 @@ Day 6:
 4. https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe?utm_source=docker&utm_medium=webreferral&utm_campaign=docs-driven-download-win-amd64&_gl=1*1ub2f83*_gcl_au*NjY1NTQyNjc1LjE3OTQwMTMxMDE.*_ga*MTc1MzE3NDY1NS4xNzk0MDEzMTAx*_ga_XJWPQMJYHQ*czE3OTQwMTMxMDAkbzEkZzEkdDE3OTQwMTMxMDIkajU4JGwwJGgw
 
 	Restart system after Installation & run in cmd prompt "docker --version" & then "docker run hello-world"
+
+
+
+
+Commands:
+Set-Content ask1.json '{"question":"What is the fine for late return of library books?","session_id":"demo"}' -Encoding ASCII
+curl.exe -s --max-time 300 -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d "@ask1.json"

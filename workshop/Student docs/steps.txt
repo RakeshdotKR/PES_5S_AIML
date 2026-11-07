@@ -64,3 +64,6 @@ Day 6:
 		3.6 copy ..\Day3\D3P2.py .
 		3.7 copy ..\Day3\D3P3.py .
 		3.8 # vector stores — faiss/pinecone/chromadb are: 			copy ..\Day2\D2P2.py .
+
+#Download docker desktop (windows machine) using following link (only if not already available)
+4. https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe?utm_source=docker&utm_medium=webreferral&utm_campaign=docs-driven-download-win-amd64&_gl=1*1ub2f83*_gcl_au*NjY1NTQyNjc1LjE3OTQwMTMxMDE.*_ga*MTc1MzE3NDY1NS4xNzk0MDEzMTAx*_ga_XJWPQMJYHQ*czE3OTQwMTMxMDAkbzEkZzEkdDE3OTQwMTMxMDIkajU4JGwwJGgw

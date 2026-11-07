@@ -79,3 +79,5 @@ curl.exe -s --max-time 300 -X POST http://127.0.0.1:8000/ask -H "Content-Type: a
 
 npx.cmd vercel env add GEMINI_API_KEY production    
 npx.cmd vercel env add PORT production   
+
+npx.cmd vercel --prod

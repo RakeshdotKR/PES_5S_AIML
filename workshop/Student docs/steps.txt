@@ -76,3 +76,6 @@ Day 6:
 Commands:
 Set-Content ask1.json '{"question":"What is the fine for late return of library books?","session_id":"demo"}' -Encoding ASCII
 curl.exe -s --max-time 300 -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d "@ask1.json"
+
+npx.cmd vercel env add GEMINI_API_KEY production    
+npx.cmd vercel env add PORT production   

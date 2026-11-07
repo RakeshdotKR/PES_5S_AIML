@@ -1,4 +1,4 @@
-# workshop\Day5\D5P1.py
+# workshop\Day5\D5P1copy.py
 import re
 import json
 import argparse
@@ -27,7 +27,7 @@ day4_dir = project_root / "Day4"
 sys.path.insert(0, str(day4_dir))
 sys.path.append(str(project_root))
 
-from Day4.D4P2 import make_llm, msg_text, build_agent_graph, calculator
+from D4P2 import make_llm, msg_text, build_agent_graph, calculator
 
 from guardrails import (GuardrailConfig, BudgetTracker, validate_tool_call,
                         run_with_timeout, sanitize_text, chaos_check)
@@ -89,13 +89,36 @@ object ONLY (no prose, no code fences):
 {{"route": "retrieval" | "general" | "clarify", "reason": "<one sentence>"}}
 
 Route rules:
-- "retrieval" : any fact about THIS college/campus handbook (library, fees, labs,
-                attendance, scholarships, hostel, exams, regulations). The
-                retrieval specialist can cite the handbook.
-- "general"   : arithmetic, dates/time, greetings, chitchat, general knowledge.
-- "clarify"   : the question is ambiguous or underspecified (e.g. "How do I pay?"
-                could mean fees, fines, or a donation) — you cannot pick
-                confidently. Asking beats guessing.
+
+- "retrieval":
+  Any fact about THIS college/campus handbook.
+
+- "general":
+  Arithmetic, dates/time, greetings, chitchat, general knowledge,
+  and questions about information ALREADY established in the
+  conversation.
+
+  IMPORTANT: If the user asks about information already established
+  in the conversation, use general.
+
+- "clarify":
+  Questions that cannot be answered because essential information
+  is missing, ambiguous, or underspecified.
+
+  Examples:
+  - "What is my name?" when the user has not provided their name.
+  - "How do I pay?" when the payment type is unknown.
+  - "Book a room" when the required booking details are missing.
+
+  If the conversation does not contain the requested information,
+  choose clarify rather than general.
+
+Recent conversation (context only - the question to route is the LAST line):
+{history}
+
+If the LAST line is a follow-up that the Recent conversation already answers
+(names, numbers, anything just said), route by that intent (usually retrieval
+or general) - never mark as clarify what the conversation already resolves.
 
 Question: {question}
 
@@ -172,7 +195,10 @@ def contain(name: str, fn: Callable[[MultiState], dict],
                 if injected:
                     raise RuntimeError(
                         f"simulated crash in {name} (attempt {attempt})")
-                out = fn(state)
+                # langgraph 1.2.x disables Runnable.__call__ (set to None):
+                # a compiled SUB-GRAPH node must be invoked with .invoke();
+                # ordinary function nodes (general/clarify/synthesize) just call.
+                out = fn(state) if callable(fn) else fn.invoke(state)
                 # Status tells the story: ok, or recovered on the retry.
                 # PRESERVE an earlier specialist's status: the synthesizer
                 # must not mask "general_specialist:failed" with its own
@@ -214,14 +240,14 @@ replaced with prior knowledge.
 Reply with exactly "OK" if the draft passes ALL checks. Otherwise reply with
 ONLY the corrected draft (same citation style). No preamble either way."""
 
-def build_multi(brain: str = "gemini",fail_once: Optional[str] = None,fail_always: Optional[str] = None,reflect: bool = False):
+def build_multi(brain: str = "gemini",fail_once: Optional[str] = None,fail_always: Optional[str] = None,reflect: bool = False,checkpointer=None):
     """
     Assemble the orchestrator-worker graph. Nodes that need an LLM close over
     `brain` so --brain ollama swaps EVERY outer brain at once (the retrieval
     specialist's INNER engine stays gemini — isolation rule from Day 4).
 
-    Returns a compiled graph — no checkpointer today (the capstone adds
-    thread_ids for chat UX; one-shot stress runs don't need memory).
+    Returns a compiled graph. checkpointer=None (CLI) keeps Day 5's
+    one-shot behavior; the service passes MemorySaver() for chat memory.
     """
     # The retrieval specialist IS Day 4's agent graph: search + calculator with
     # the iteration kill-switch, approval OFF (an orchestrator must run
@@ -234,7 +260,12 @@ def build_multi(brain: str = "gemini",fail_once: Optional[str] = None,fail_alway
         'clarify'. A wrong route wastes a whole specialist run and can produce
         a confident wrong answer — asking the user is the cheap loss."""
         question = state.get("question") or msg_text(state["messages"][-1])
-        prompt = ORCHESTRATOR_PROMPT.format(question=question)
+        # Day 6 (multi-turn service): show the router the last few turns —
+        # otherwise a follow-up like "What is my name?" looks context-free
+        # and gets misrouted to clarify. (CLI-era one-shot assumption, fixed.)
+        recent = state.get("messages") or []
+        history = "\n".join(f"- {msg_text(m)[:160]}" for m in recent[-4:]) or "(none yet)"
+        prompt = ORCHESTRATOR_PROMPT.format(question=question, history=history)
         llm = make_llm(brain)
 
         raw = ""
@@ -424,7 +455,7 @@ def build_multi(brain: str = "gemini",fail_once: Optional[str] = None,fail_alway
     b.add_edge("general_specialist", "synthesizer")
     b.add_edge("clarifier", END)        # clarify = end of turn (user answers next)
     b.add_edge("synthesizer", END)
-    return b.compile()
+    return b.compile(checkpointer=checkpointer)
 
 # Execution: python -c "import D5P1; g = D5P1.build_multi(); print('multi-agent graph OK')"
 

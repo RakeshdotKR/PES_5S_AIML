@@ -31,7 +31,7 @@ sys.path.insert(0, str(day3_dir))
 sys.path.append(str(project_root))
 
 # 3. Day 3's engine — the search tool literally calls this function.
-from Day3.D3P3 import answer as rag_answer
+from D3P3 import answer as rag_answer
 
 load_dotenv()
 

@@ -21,10 +21,10 @@ sys.path.insert(0, str(day3_dir))          # Fixes local imports (P1, P2)
 sys.path.append(str(day3_dir.parent))     # Keeps cross-folder imports (Day2.P2)
 
 # Now your original imports will work perfectly from anywhere:
-from Day2.D2P2 import get_vector_store
-from Day3.D3P1 import rewrite_query, mmr_rerank, gemini_text, embed_query_ollama, embed_ollama, \
+from D2P2 import get_vector_store
+from D3P1 import rewrite_query, mmr_rerank, gemini_text, embed_query_ollama, embed_ollama, \
     GEMINI_CHAT_MODEL, OLLAMA_CHAT_MODEL
-from Day3.D3P2 import build_prompt
+from D3P2 import build_prompt
 
 load_dotenv()
 

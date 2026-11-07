@@ -334,7 +334,7 @@ def run_ab_experiment() -> None:
                 print(f"    [{i}] score={r['score']:.3f} | {r['document'][:80].replace(chr(10), ' ')}")
 
 # **********************************************************************************************************
-from Day3.D3P2 import build_prompt
+from D3P2 import build_prompt
 
 
 def answer_once(
